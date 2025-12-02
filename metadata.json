@@ -1,0 +1,5 @@
+{
+  "name": "Melody AI Composer",
+  "description": "An interactive musical staff where users place notes and AI completes the composition using a piano interface.",
+  "requestFramePermissions": []
+}
