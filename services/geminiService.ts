@@ -32,20 +32,23 @@ export class GeminiService {
     }));
 
     const prompt = `
-      You are an expert pianist and composer.
-      Task:
-      1. Analyze the provided melody (JSON).
-      2. Polish it: You may slightly adjust timing or add harmonies to the existing notes if they feel empty, but keep the user's main idea intact.
-      3. Extend it: Add 4 to 8 bars of new music following the established key, mood, and rhythm.
-      4. The total length should be the original length plus roughly 16 to 32 steps (1-2 bars) or slightly more if needed for resolution.
-      5. Output the FULL sequence (original polished + extension) as JSON.
-      
+      You are a world-class composer and pianist. Your task is to turn a user's simple melody sketch into a beautiful, complete musical piece.
+
+      CRITICAL INSTRUCTIONS:
+      1. **Harmonize & Infill**: Do NOT just add notes to the end. You MUST add notes *between* the user's notes and *simultaneous* to them (chords/bass).
+         - If the user provided a single melody line, add a left-hand accompaniment (bass notes, chords, or arpeggios in ranges C3-B3).
+         - Fill empty rhythmic gaps in the user's melody to create a smooth flow, but keep the user's original motif recognizable.
+      2. **Polish**: You may slightly adjust the user's note timings or durations if they are rhythmically awkward, but respect their general intent.
+      3. **Extend**: After processing the user's section, extend the piece by 4 to 8 bars to bring it to a satisfying musical resolution.
+      4. **Style**: Create a pleasant, coherent piece (e.g., Classical, Jazz, or Pop Ballad style).
+      5. **Output**: Return the ENTIRE sequence (enhanced user notes + new extension).
+
       Constraints:
       - 'startTime' and 'duration' are in 16th-note steps.
-      - Use 'pitch' like "C4", "G#5".
-      - Keep it playable on a piano.
+      - Use 'pitch' like "C3", "C#4".
+      - Ensure the output is playable (two hands max).
       
-      Input JSON:
+      Input Melody (JSON):
       ${JSON.stringify(simplifiedNotes)}
     `;
 
@@ -56,8 +59,8 @@ export class GeminiService {
         config: {
           responseMimeType: "application/json",
           responseSchema: noteSchema,
-          // Low temperature for musical consistency, but enough for creativity
-          temperature: 0.4, 
+          // Slightly higher temperature for more creative harmonies
+          temperature: 0.5, 
         }
       });
 
@@ -67,21 +70,24 @@ export class GeminiService {
       const rawNotes = JSON.parse(jsonStr) as any[];
 
       // Post-process to ensure IDs and AI flags are set correctly
-      // We try to match old notes to preserve IDs if possible, or just regenerate
       const newNotes: Note[] = rawNotes.map((n: any, index: number) => {
-        // Simple heuristic: if this note overlaps significantly with an original note, valid.
-        // But simpler: Just treat everything from AI as "clean slate" based on user input, 
-        // but mark the ones that start *after* the original max time as 'isAiGenerated' for visual flair.
         
-        const originalMaxTime = Math.max(...currentNotes.map(cn => cn.startTime + cn.duration), 0);
-        const isExtension = n.startTime >= originalMaxTime;
+        // Determine if this note is "new" or "modified".
+        // We consider a note "AI generated" if:
+        // 1. It is completely outside the time range of original notes (Extension)
+        // 2. OR it does not match any original note at that specific time/pitch (Harmonization/Infill)
+        
+        const isOriginalMatch = currentNotes.some(cn => 
+            cn.pitch === n.pitch && 
+            Math.abs(cn.startTime - n.startTime) < 1 // Strict timing match
+        );
 
         return {
           id: `ai-${index}-${Date.now()}`,
           pitch: n.pitch,
           startTime: n.startTime,
           duration: n.duration,
-          isAiGenerated: isExtension || !currentNotes.some(cn => cn.pitch === n.pitch && Math.abs(cn.startTime - n.startTime) < 2),
+          isAiGenerated: !isOriginalMatch, // Highlight everything the AI added or changed
         };
       });
 

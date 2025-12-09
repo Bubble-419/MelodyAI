@@ -84,13 +84,13 @@ const App: React.FC = () => {
     }
 
     setPlaybackState(PlaybackState.PLAYING);
-    setMessage("Playing...");
+    setMessage(isGenerating ? "Playing existing notes while AI composes..." : "Playing...");
 
     audioService.playSequence(notes, () => {
       setPlaybackState(PlaybackState.STOPPED);
-      setMessage("Playback finished.");
+      setMessage(isGenerating ? "Waiting for AI..." : "Playback finished.");
     });
-  }, [notes, playbackState]);
+  }, [notes, playbackState, isGenerating]);
 
   const handleGenerate = useCallback(async () => {
     if (notes.length < 3) {
@@ -103,15 +103,12 @@ const App: React.FC = () => {
     try {
       await audioService.initialize();
       setIsGenerating(true);
-      setMessage("Generating accompaniment... (Playing your notes while you wait)");
+      setMessage("AI is listening... (You can play your notes while waiting)");
 
       // 1. Start playing current notes immediately for perceived speed
-      // We don't block the AI call.
+      // But now we allow the user to stop it via handlePlay, so we use the same logic
       setPlaybackState(PlaybackState.PLAYING);
       audioService.playSequence(notes, () => {
-         // If AI is still thinking, we just wait.
-         // If AI is done, the effect will trigger re-render and we might want to play full result?
-         // For now, let's stop.
          setPlaybackState(PlaybackState.STOPPED);
       });
 
@@ -177,7 +174,8 @@ const App: React.FC = () => {
         <div className="flex gap-2">
              <button 
                 onClick={handlePlay}
-                disabled={notes.length === 0 || isGenerating}
+                // Allow playing while generating so users aren't bored
+                disabled={notes.length === 0}
                 className={`px-6 py-2 text-sm font-bold text-white rounded-lg transition-colors flex items-center gap-2 ${
                     playbackState === PlaybackState.PLAYING 
                     ? 'bg-amber-500 hover:bg-amber-600' 
@@ -217,6 +215,7 @@ const App: React.FC = () => {
       
       <div className="mt-6 text-sm text-slate-400">
         <p>Tip: You can place multiple notes on the same vertical line to create chords.</p>
+        <p><strong>Double-click</strong> a note to remove it.</p>
         <p className="mt-1 flex items-center gap-4 justify-center">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span> Your Notes</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-purple-600 inline-block"></span> AI Generated</span>
