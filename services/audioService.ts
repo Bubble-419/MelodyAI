@@ -63,6 +63,23 @@ class AudioService {
     return this.loadPromise;
   }
 
+  // Called when user presses down
+  public startNote(pitch: string) {
+    if (!this.synth || !this.synth.loaded) {
+      this.initialize();
+      return;
+    }
+    // triggerAttack keeps playing until triggerRelease is called
+    this.synth.triggerAttack(pitch);
+  }
+
+  // Called when user releases
+  public stopNote(pitch: string) {
+    if (this.synth && this.synth.loaded) {
+        this.synth.triggerRelease(pitch);
+    }
+  }
+
   public playNote(pitch: string, durationStr: string = '8n') {
     // If not loaded yet, try to initialize in background, but we can't play this specific note yet
     if (!this.synth || !this.synth.loaded) {

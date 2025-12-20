@@ -10,57 +10,42 @@ const App: React.FC = () => {
   const [playbackState, setPlaybackState] = useState<PlaybackState>(PlaybackState.STOPPED);
   const [playbackTime, setPlaybackTime] = useState(0); // In steps
   const [isGenerating, setIsGenerating] = useState(false);
-  const [message, setMessage] = useState<string>("Click on the staff to place notes.");
+  const [message, setMessage] = useState<string>("Hold for 2.5s to place a note.");
 
   // Init Audio
   useEffect(() => {
-    const init = async () => {
-      // User interaction usually required to start audio context
-      // We'll handle it on the first click on the UI
-    };
+    const init = async () => {};
     init();
   }, []);
 
   // Playback Loop Monitor
   useEffect(() => {
     let animationId: number;
-
     const loop = () => {
       if (playbackState === PlaybackState.PLAYING) {
-        // Sync visual cursor with Tone.Transport
-        // Tone.Transport.position returns "BAR:BEAT:SIXTEENTH"
-        // We can get seconds and convert, or use ticks.
-        // Simplest: Get seconds, convert to steps.
         const now = Tone.Transport.seconds;
-        // 1 step = 16th note.
-        // BPM 100. 1 beat = 60/100 = 0.6s. 1 step = 0.15s.
-        const secondsPerStep = (60 / 100) / 4;
+        const secondsPerStep = (60 / 120) / 4; // Based on 120 BPM
         const currentStep = now / secondsPerStep;
-        
         setPlaybackTime(currentStep);
         animationId = requestAnimationFrame(loop);
       }
     };
-
     if (playbackState === PlaybackState.PLAYING) {
       loop();
     } else {
       setPlaybackTime(0);
     }
-
     return () => cancelAnimationFrame(animationId);
   }, [playbackState]);
 
   const handleAddNote = useCallback((note: Note) => {
     setNotes(prev => [...prev, note]);
-    audioService.initialize(); // Ensure audio is ready on first interaction
+    audioService.initialize();
   }, []);
 
   const handleUndo = useCallback(() => {
     setNotes(prev => {
         const newNotes = [...prev];
-        // Remove the last added note (assuming user added them in order of creation, or just remove last in array)
-        // If we want "undo last action", popping last array element is correct.
         newNotes.pop();
         return newNotes;
     });
@@ -74,18 +59,14 @@ const App: React.FC = () => {
 
   const handlePlay = useCallback(async () => {
     if (notes.length === 0) return;
-    
     await audioService.initialize();
-    
     if (playbackState === PlaybackState.PLAYING) {
       audioService.stop();
       setPlaybackState(PlaybackState.STOPPED);
       return;
     }
-
     setPlaybackState(PlaybackState.PLAYING);
-    setMessage(isGenerating ? "Playing existing notes while AI composes..." : "Playing...");
-
+    setMessage(isGenerating ? "Playing while AI composes..." : "Playing...");
     audioService.playSequence(notes, () => {
       setPlaybackState(PlaybackState.STOPPED);
       setMessage(isGenerating ? "Waiting for AI..." : "Playback finished.");
@@ -94,34 +75,22 @@ const App: React.FC = () => {
 
   const handleGenerate = useCallback(async () => {
     if (notes.length < 3) {
-      setMessage("Please place at least 3 notes before generating.");
+      setMessage("Please place at least 3 notes.");
       return;
     }
-
     if (isGenerating) return;
-
     try {
       await audioService.initialize();
       setIsGenerating(true);
-      setMessage("AI is listening... (You can play your notes while waiting)");
-
-      // 1. Start playing current notes immediately for perceived speed
-      // But now we allow the user to stop it via handlePlay, so we use the same logic
+      setMessage("AI is listening...");
       setPlaybackState(PlaybackState.PLAYING);
       audioService.playSequence(notes, () => {
          setPlaybackState(PlaybackState.STOPPED);
       });
-
-      // 2. Call Gemini in background
       const newNotes = await geminiService.completeMelody(notes);
-      
-      // 3. Update state
       setNotes(newNotes);
-      setMessage("AI Composition complete! Playing full version...");
-      
-      // 4. Stop current playback (if any) and restart with full notes
+      setMessage("Composition complete!");
       audioService.stop();
-      // Small timeout to allow cleanup
       setTimeout(() => {
           setPlaybackState(PlaybackState.PLAYING);
           audioService.playSequence(newNotes, () => {
@@ -129,10 +98,8 @@ const App: React.FC = () => {
               setMessage("Done.");
           });
       }, 500);
-
     } catch (error) {
-      setMessage("Error generating music. Please try again.");
-      console.error(error);
+      setMessage("Error generating music.");
       setPlaybackState(PlaybackState.STOPPED);
     } finally {
       setIsGenerating(false);
@@ -143,82 +110,36 @@ const App: React.FC = () => {
     <div className="min-h-screen flex flex-col items-center py-10 px-4 max-w-5xl mx-auto">
       <header className="mb-8 text-center">
         <h1 className="text-4xl font-bold text-slate-800 mb-2">Melody AI Composer</h1>
-        <p className="text-slate-500">
-          Place notes on the staff. Let AI complete your masterpiece.
-        </p>
+        <p className="text-slate-500">Long-press to record your inspiration.</p>
       </header>
 
-      {/* Controls */}
       <div className="flex flex-wrap gap-4 mb-6 w-full justify-center md:justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-100 sticky top-4 z-20">
         <div className="flex gap-2">
-            <button 
-                onClick={handleUndo}
-                disabled={notes.length === 0 || isGenerating}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors"
-            >
-                Undo
-            </button>
-            <button 
-                onClick={handleClear}
-                disabled={notes.length === 0 || isGenerating}
-                className="px-4 py-2 text-sm font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors"
-            >
-                Clear
-            </button>
+            <button onClick={handleUndo} disabled={notes.length === 0 || isGenerating} className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50">Undo</button>
+            <button onClick={handleClear} disabled={notes.length === 0 || isGenerating} className="px-4 py-2 text-sm font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50">Clear</button>
         </div>
-
-        <div className="text-sm font-medium text-slate-600 animate-pulse">
-            {message}
-        </div>
-
+        <div className="text-sm font-medium text-slate-600">{message}</div>
         <div className="flex gap-2">
-             <button 
-                onClick={handlePlay}
-                // Allow playing while generating so users aren't bored
-                disabled={notes.length === 0}
-                className={`px-6 py-2 text-sm font-bold text-white rounded-lg transition-colors flex items-center gap-2 ${
-                    playbackState === PlaybackState.PLAYING 
-                    ? 'bg-amber-500 hover:bg-amber-600' 
-                    : 'bg-slate-800 hover:bg-slate-900'
-                }`}
-            >
+             <button onClick={handlePlay} disabled={notes.length === 0} className={`px-6 py-2 text-sm font-bold text-white rounded-lg ${playbackState === PlaybackState.PLAYING ? 'bg-amber-500' : 'bg-slate-800'}`}>
                 {playbackState === PlaybackState.PLAYING ? 'Stop' : 'Play'}
             </button>
-            <button 
-                onClick={handleGenerate}
-                disabled={notes.length === 0 || isGenerating}
-                className="px-6 py-2 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-md shadow-indigo-200"
-            >
-                {isGenerating ? (
-                    <span className="flex items-center gap-2">
-                        <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Composing...
-                    </span>
-                ) : (
-                    '✨ Generate AI Completion'
-                )}
+            <button onClick={handleGenerate} disabled={notes.length === 0 || isGenerating} className="px-6 py-2 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                {isGenerating ? 'Composing...' : '✨ Generate AI'}
             </button>
         </div>
       </div>
 
-      {/* Staff Display */}
       <Staff 
-        notes={notes} 
-        onAddNote={handleAddNote} 
-        onRemoveNote={(id) => setNotes(prev => prev.filter(n => n.id !== id))}
-        isPlaying={playbackState === PlaybackState.PLAYING}
-        playbackTime={playbackTime}
+        notes={notes} onAddNote={handleAddNote} onRemoveNote={(id) => setNotes(prev => prev.filter(n => n.id !== id))}
+        isPlaying={playbackState === PlaybackState.PLAYING} playbackTime={playbackTime}
       />
       
-      <div className="mt-6 text-sm text-slate-400">
-        <p>Tip: You can place multiple notes on the same vertical line to create chords.</p>
-        <p><strong>Double-click</strong> a note to remove it.</p>
-        <p className="mt-1 flex items-center gap-4 justify-center">
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span> Your Notes</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-purple-600 inline-block"></span> AI Generated</span>
+      <div className="mt-6 text-sm text-slate-400 text-center">
+        <p><strong>Long Press (2.5s)</strong>: Place a note at the coordinate.</p>
+        <p><strong>Double-click</strong>: Remove a note.</p>
+        <p className="mt-2 flex items-center gap-4 justify-center">
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span> Yours</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-purple-600 inline-block"></span> AI</span>
         </p>
       </div>
     </div>

@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import * as d3 from 'd3';
-import { Note, StaffConfig } from '../types';
+import { Note } from '../types';
 import { CONFIG, PITCH_ORDER, STAFF_LINES, NOTE_COLORS } from '../constants';
 import { audioService } from '../services/audioService';
 
@@ -12,27 +12,34 @@ interface StaffProps {
   playbackTime: number; // Current playback step
 }
 
+const HOLD_DURATION = 2500; // 2.5 seconds to confirm note placement
+
 const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying, playbackTime }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const [scrollLeft, setScrollLeft] = useState(0);
 
-  // Dynamic width based on the furthest note or default measures
+  // Track active pointers for multi-touch and their specific hold states
+  const activePointers = useRef(new Map<number, { 
+    pitch: string,
+    stepIndex: number,
+    rippleGroup: d3.Selection<SVGGElement, unknown, null, undefined>,
+    rippleInterval: ReturnType<typeof setInterval>,
+    placementTimer: ReturnType<typeof setTimeout>,
+    hasPlaced: boolean // Flag to prevent multiple placements per hold
+  }>());
+
   const maxTime = Math.max(
-    CONFIG.measureCount * 16, // Minimum 4 bars
-    ...(notes.length ? notes.map(n => n.startTime + n.duration + 16) : [0]) // +1 bar buffer
+    CONFIG.measureCount * 16,
+    ...(notes.length ? notes.map(n => n.startTime + n.duration + 16) : [0])
   );
   
-  const width = maxTime * CONFIG.stepWidth + 100; // Extra padding
-  const height = PITCH_ORDER.length * (CONFIG.lineHeight / 2) + 100; // Height based on pitch range
+  const width = maxTime * CONFIG.stepWidth + 100;
+  const height = PITCH_ORDER.length * (CONFIG.lineHeight / 2) + 100;
   const marginTop = 50;
-  const marginLeft = 60; // Space for Clef/Keys
+  const marginLeft = 60;
 
-  // Scales
   const xScale = useMemo(() => 
-    d3.scaleLinear()
-      .domain([0, maxTime])
-      .range([0, maxTime * CONFIG.stepWidth]),
+    d3.scaleLinear().domain([0, maxTime]).range([0, maxTime * CONFIG.stepWidth]),
   [maxTime]);
 
   const yScale = useMemo(() => 
@@ -42,193 +49,232 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
       .padding(0.5),
   []);
 
-  // Render Logic
+  useEffect(() => {
+    return () => {
+      activePointers.current.forEach(p => {
+        clearInterval(p.rippleInterval);
+        clearTimeout(p.placementTimer);
+        audioService.stopNote(p.pitch);
+      });
+      activePointers.current.clear();
+    };
+  }, []);
+
   useEffect(() => {
     if (!svgRef.current) return;
-
     const svg = d3.select(svgRef.current);
-    svg.selectAll("*").remove(); // Clear previous render
-
-    const g = svg.append("g")
-      .attr("transform", `translate(${marginLeft}, ${marginTop})`);
-
-    // 1. Draw Grid (Measure Lines & Beat Lines)
-    const gridGroup = g.append("g").attr("class", "grid");
     
-    // 16th note grid (faint)
+    let mainGroup = svg.select<SVGGElement>("g.main-content");
+    if (mainGroup.empty()) {
+        mainGroup = svg.append("g")
+            .attr("class", "main-content")
+            .attr("transform", `translate(${marginLeft}, ${marginTop})`);
+        
+        mainGroup.append("g").attr("class", "grid-layer");
+        mainGroup.append("g").attr("class", "staff-layer");
+        mainGroup.append("g").attr("class", "interaction-layer");
+        mainGroup.append("g").attr("class", "notes-layer");
+        mainGroup.append("text").attr("class", "clef-text");
+    }
+
+    // Grid
+    const gridLayer = mainGroup.select(".grid-layer");
+    gridLayer.selectAll("*").remove();
     for (let i = 0; i <= maxTime; i++) {
         const isMeasure = i % 16 === 0;
         const isBeat = i % 4 === 0;
-        
         if (isMeasure || isBeat) {
-             gridGroup.append("line")
-            .attr("x1", xScale(i))
-            .attr("x2", xScale(i))
-            .attr("y1", -20)
-            .attr("y2", height)
-            .attr("stroke", isMeasure ? "#94a3b8" : "#e2e8f0")
-            .attr("stroke-width", isMeasure ? 2 : 1)
-            .attr("stroke-dasharray", isMeasure ? "none" : "4 2");
+            gridLayer.append("line")
+                .attr("x1", xScale(i)).attr("x2", xScale(i))
+                .attr("y1", -20).attr("y2", height)
+                .attr("stroke", isMeasure ? "#94a3b8" : "#e2e8f0")
+                .attr("stroke-width", isMeasure ? 2 : 1)
+                .attr("stroke-dasharray", isMeasure ? "none" : "4 2");
         }
     }
 
-    // 2. Draw Staff Lines
-    const staffGroup = g.append("g").attr("class", "staff-lines");
-    
+    // Staff Lines
+    const staffLayer = mainGroup.select(".staff-layer");
+    staffLayer.selectAll("*").remove();
     STAFF_LINES.forEach(pitch => {
       const y = yScale(pitch);
       if (y !== undefined) {
-        staffGroup.append("line")
-          .attr("x1", 0)
-          .attr("x2", width)
-          .attr("y1", y)
-          .attr("y2", y)
-          .attr("stroke", "#334155")
-          .attr("stroke-width", 2);
+        staffLayer.append("line")
+          .attr("x1", 0).attr("x2", width).attr("y1", y).attr("y2", y)
+          .attr("stroke", "#334155").attr("stroke-width", 2);
       }
     });
 
-    // 3. Draw Clef (Simplified visual representation)
-    g.append("text")
-      .attr("x", -40)
-      .attr("y", (yScale("G4") || 0) + 10)
-      .text("𝄞")
-      .attr("font-size", "60px")
-      .attr("fill", "#0f172a");
+    mainGroup.select(".clef-text")
+      .attr("x", -40).attr("y", (yScale("G4") || 0) + 10)
+      .text("𝄞").attr("font-size", "60px").attr("fill", "#0f172a");
 
-    // 4. Draw Notes
-    const notesGroup = g.append("g").attr("class", "notes");
+    // Interaction Layer
+    const interactionLayer = mainGroup.select(".interaction-layer");
+    let hitRect = interactionLayer.select<SVGRectElement>("rect.hit-rect");
+    if (hitRect.empty()) {
+        hitRect = interactionLayer.append("rect")
+            .attr("class", "hit-rect")
+            .attr("fill", "transparent")
+            .style("touch-action", "none")
+            .on("contextmenu", (e) => e.preventDefault());
+    }
+
+    hitRect.attr("width", width).attr("height", height);
+
+    hitRect
+      .on("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const pointerId = event.pointerId;
+        const [mx, my] = d3.pointer(event, interactionLayer.node());
+        
+        const stepIndex = Math.round(xScale.invert(mx));
+        const domain = yScale.domain();
+        const stepSize = yScale.step();
+        const closestIndex = Math.round(my / stepSize);
+        const pitch = domain[Math.max(0, Math.min(domain.length - 1, closestIndex))];
+
+        if (!pitch) return;
+
+        const targetX = xScale(stepIndex);
+        const targetY = yScale(pitch) || my;
+
+        audioService.startNote(pitch);
+
+        const rippleGroup = interactionLayer.append("g")
+            .attr("transform", `translate(${targetX}, ${targetY})`)
+            .style("pointer-events", "none");
+
+        const spawnRipple = () => {
+            rippleGroup.append("circle")
+                .attr("r", 0).attr("fill", "none").attr("stroke", NOTE_COLORS.USER).attr("stroke-width", 2).attr("opacity", 0.8)
+                .transition().duration(1000).ease(d3.easeLinear).attr("r", 50).attr("opacity", 0)
+                .on("end", function() { d3.select(this).remove(); });
+        };
+
+        spawnRipple();
+        const rippleInterval = setInterval(spawnRipple, 400);
+
+        // Define what happens when hold duration is reached
+        const placementTimer = setTimeout(() => {
+            const data = activePointers.current.get(pointerId);
+            if (data && !data.hasPlaced) {
+                // 1. Mark as placed
+                data.hasPlaced = true;
+                
+                // 2. Clear ripples
+                clearInterval(data.rippleInterval);
+                data.rippleGroup.transition().duration(200).attr("opacity", 0).remove();
+                
+                // 3. Stop sound
+                audioService.stopNote(data.pitch);
+                
+                // 4. Add the actual note
+                const newNote: Note = {
+                    id: `user-${Date.now()}-${pointerId}`,
+                    pitch: data.pitch,
+                    startTime: data.stepIndex,
+                    duration: 4, // Fixed Quarter Note
+                    isAiGenerated: false
+                };
+                onAddNote(newNote);
+            }
+        }, HOLD_DURATION);
+
+        activePointers.current.set(pointerId, {
+            pitch,
+            stepIndex,
+            rippleGroup,
+            rippleInterval,
+            placementTimer,
+            hasPlaced: false
+        });
+
+        (event.target as Element).setPointerCapture(pointerId);
+      })
+      .on("pointerup pointercancel", (event) => {
+        event.preventDefault();
+        const pointerId = event.pointerId;
+        const data = activePointers.current.get(pointerId);
+        
+        if (data) {
+            // Cleanup
+            clearTimeout(data.placementTimer);
+            clearInterval(data.rippleInterval);
+            data.rippleGroup.remove();
+            audioService.stopNote(data.pitch);
+            
+            activePointers.current.delete(pointerId);
+        }
+      });
+
+    // Notes Layer
+    const notesLayer = mainGroup.select(".notes-layer");
+    notesLayer.selectAll("*").remove();
 
     notes.forEach(note => {
       const x = xScale(note.startTime);
       const y = yScale(note.pitch);
       const color = note.isAiGenerated ? NOTE_COLORS.AI : NOTE_COLORS.USER;
-      
       if (y === undefined) return;
 
-      const noteG = notesGroup.append("g")
-        .attr("class", "note")
-        .attr("cursor", "pointer")
+      const noteG = notesLayer.append("g")
+        .attr("class", "note").attr("cursor", "pointer")
+        .on("pointerdown", (event) => event.stopPropagation())
         .on("click", (event) => {
-          event.stopPropagation(); // Prevent triggering background add
-          // Play note on click
+          event.stopPropagation(); 
           audioService.playNote(note.pitch);
-          // Optional: allow removing on right click or shift click? 
-          // For now, let's keep it add-only on grid, undo button for mistakes.
+        })
+        .on("dblclick", (event) => {
+           event.preventDefault(); event.stopPropagation();
+           onRemoveNote(note.id);
         });
 
-      // Note Head
-      noteG.append("ellipse")
-        .attr("cx", x)
-        .attr("cy", y)
-        .attr("rx", 8)
-        .attr("ry", 6)
-        .attr("fill", color)
-        .attr("stroke", "white")
-        .attr("stroke-width", 1);
+      noteG.append("rect")
+        .attr("x", x - 15).attr("y", y - 15).attr("width", 30).attr("height", 30).attr("fill", "transparent");
 
-      // Ledger Lines (if outside standard E4-F5)
-      const isHigh = PITCH_ORDER.indexOf(note.pitch) < PITCH_ORDER.indexOf("F5");
-      const isLow = PITCH_ORDER.indexOf(note.pitch) > PITCH_ORDER.indexOf("E4");
+      noteG.append("ellipse")
+        .attr("cx", x).attr("cy", y).attr("rx", 9).attr("ry", 6).attr("fill", color).attr("stroke", "white").attr("stroke-width", 1)
+        .attr("pointer-events", "none").attr("transform", `rotate(-15, ${x}, ${y})`);
+
+      const pitchIndex = PITCH_ORDER.indexOf(note.pitch);
+      const centerIndex = PITCH_ORDER.indexOf("B4");
+      const isStemUp = pitchIndex > centerIndex;
+      const stemX = isStemUp ? x + 8 : x - 8;
+      const stemYStart = y;
+      const stemYEnd = isStemUp ? y - 35 : y + 35;
+
+      noteG.append("line")
+        .attr("x1", stemX).attr("y1", stemYStart).attr("x2", stemX).attr("y2", stemYEnd)
+        .attr("stroke", color).attr("stroke-width", 2).attr("pointer-events", "none");
+
+      const isHigh = PITCH_ORDER.indexOf(note.pitch) <= PITCH_ORDER.indexOf("A5") && PITCH_ORDER.indexOf(note.pitch) < PITCH_ORDER.indexOf("F5");
+      const isLow = PITCH_ORDER.indexOf(note.pitch) >= PITCH_ORDER.indexOf("C4") && PITCH_ORDER.indexOf(note.pitch) > PITCH_ORDER.indexOf("E4");
       
       if (isHigh || isLow) {
-          // Find nearest even line
-          // This is a simplified visual calculation for ledgers
-          // In a full app, this logic is more complex.
-          // For now, we draw a small line through the note if it's not on a staff line pitch.
-          // Actually, let's just draw a line if it is C4, A5 etc.
           if (["C4", "A5", "C6", "A3"].includes(note.pitch)) {
              noteG.append("line")
-                .attr("x1", x - 12)
-                .attr("x2", x + 12)
-                .attr("y1", y)
-                .attr("y2", y)
-                .attr("stroke", "#334155")
-                .attr("stroke-width", 2);
+                .attr("x1", x - 14).attr("x2", x + 14).attr("y1", y).attr("y2", y)
+                .attr("stroke", "#334155").attr("stroke-width", 2).attr("pointer-events", "none");
           }
       }
-
-      // Stem
-      noteG.append("line")
-        .attr("x1", x + 7)
-        .attr("x2", x + 7)
-        .attr("y1", y)
-        .attr("y2", y - 35) // Upward stem for simplicity
-        .attr("stroke", color)
-        .attr("stroke-width", 2);
     });
 
-    // 5. Playback Indicator
-    if (isPlaying || playbackTime > 0) {
-        // We use a CSS transition based rectangle or line
-        // But D3 is easier for precise positioning
-        // Calculate X for current 16th step.
-        // We might want smooth animation, but step-based is easier to sync with Tone.js loop
-        // If we want smooth, we need RequestAnimationFrame and startTime of playback. 
-        // Given constraints, step indicator is acceptable.
-        
-        // Wait, for *smooth* playback cursor, we ideally use the Tone.Transport.seconds
-        // But passing that down to React state causes too many re-renders.
-        // We will just draw a line at the current playbackTime step passed from parent.
-    }
-    
-    // 6. Interaction Overlay (Invisible rect to catch clicks)
-    g.append("rect")
-      .attr("width", width)
-      .attr("height", height)
-      .attr("fill", "transparent")
-      .on("click", (event) => {
-        const [mx, my] = d3.pointer(event);
-        
-        // Quantize X to nearest 16th note step
-        const stepIndex = Math.round(xScale.invert(mx));
-        
-        // Quantize Y to nearest Pitch
-        const domain = yScale.domain();
-        const range = yScale.range(); // undefined if point scale?
-        // ScalePoint doesn't implement invert. We must find closest.
-        const stepSize = yScale.step();
-        const closestIndex = Math.round(my / stepSize);
-        const pitch = domain[Math.max(0, Math.min(domain.length - 1, closestIndex))];
-
-        if (pitch) {
-            const newNote: Note = {
-                id: `user-${Date.now()}`,
-                pitch,
-                startTime: stepIndex,
-                duration: 4, // Default quarter note
-                isAiGenerated: false
-            };
-            // Audio feedback
-            audioService.playNote(pitch);
-            onAddNote(newNote);
-        }
-      });
-
   }, [notes, maxTime, xScale, yScale, width, height]);
-
 
   return (
     <div 
       ref={containerRef} 
       className="staff-container overflow-x-auto overflow-y-hidden border border-slate-200 bg-white rounded-xl shadow-sm w-full relative"
-      style={{ height: height + 100 }}
+      style={{ height: height + 100, touchAction: 'none' }}
     >
-        <svg 
-            ref={svgRef} 
-            width={width + marginLeft} 
-            height={height + marginTop + 50} 
-            className="block"
-        />
-        {/* Playback Cursor (React Overlay for smoother updates if needed, though doing it in D3 useEffect is okay too) */}
-        {/* Using a simple absolute div for the cursor to avoid full SVG re-renders just for the cursor */}
+        <svg ref={svgRef} width={width + marginLeft} height={height + marginTop + 50} className="block select-none" />
         {(isPlaying || playbackTime > 0) && (
             <div 
                 className="absolute top-0 bottom-0 w-0.5 bg-amber-500 z-10 transition-all duration-75"
-                style={{ 
-                    left: `${marginLeft + xScale(playbackTime)}px`,
-                    height: '100%' 
-                }}
+                style={{ left: `${marginLeft + xScale(playbackTime)}px`, height: '100%' }}
             />
         )}
     </div>
