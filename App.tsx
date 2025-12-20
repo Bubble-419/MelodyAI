@@ -11,6 +11,8 @@ const App: React.FC = () => {
   const [playbackTime, setPlaybackTime] = useState(0); 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGuideMode, setIsGuideMode] = useState(false);
+  const [hasShownGuideHint, setHasShownGuideHint] = useState(false);
+  const [triggerHint, setTriggerHint] = useState(false);
   const [message, setMessage] = useState<string>("Hold for 2.5s to place a note.");
 
   // Playback Loop Monitor
@@ -32,6 +34,16 @@ const App: React.FC = () => {
     }
     return () => cancelAnimationFrame(animationId);
   }, [playbackState]);
+
+  // Trigger hint animation once when entering guide mode for the first time
+  useEffect(() => {
+    if (isGuideMode && !hasShownGuideHint) {
+      setTriggerHint(true);
+      setHasShownGuideHint(true);
+      // Reset trigger state after animation finishes (approx 5s)
+      setTimeout(() => setTriggerHint(false), 5500);
+    }
+  }, [isGuideMode, hasShownGuideHint]);
 
   const handleAddNote = useCallback((note: Note) => {
     setNotes(prev => [...prev, note]);
@@ -153,6 +165,7 @@ const App: React.FC = () => {
         notes={notes} onAddNote={handleAddNote} onRemoveNote={(id) => setNotes(prev => prev.filter(n => n.id !== id))}
         isPlaying={playbackState === PlaybackState.PLAYING} playbackTime={playbackTime}
         isGuideMode={isGuideMode}
+        showHintAnimation={triggerHint}
       />
       
       <div className="mt-6 text-sm text-slate-400 text-center">
