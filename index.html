@@ -24,6 +24,16 @@
       .staff-container::-webkit-scrollbar-thumb:hover {
         background: #64748b;
       }
+
+      /* Guide Glow Animation */
+      @keyframes guide-pulse {
+        0% { filter: drop-shadow(0 0 2px rgba(99, 102, 241, 0.4)); opacity: 0.3; }
+        50% { filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.8)); opacity: 0.6; }
+        100% { filter: drop-shadow(0 0 2px rgba(99, 102, 241, 0.4)); opacity: 0.3; }
+      }
+      .guide-note {
+        animation: guide-pulse 2s infinite ease-in-out;
+      }
     </style>
   <script type="importmap">
 {

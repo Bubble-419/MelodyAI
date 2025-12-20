@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useMemo } from 'react';
 import * as d3 from 'd3';
 import { Note } from '../types';
-import { CONFIG, PITCH_ORDER, STAFF_LINES, NOTE_COLORS } from '../constants';
+import { CONFIG, PITCH_ORDER, STAFF_LINES, NOTE_COLORS, GUIDE_MELODY } from '../constants';
 import { audioService } from '../services/audioService';
 
 interface StaffProps {
@@ -9,27 +9,29 @@ interface StaffProps {
   onAddNote: (note: Note) => void;
   onRemoveNote: (noteId: string) => void;
   isPlaying: boolean;
-  playbackTime: number; // Current playback step
+  playbackTime: number; 
+  isGuideMode?: boolean;
 }
 
-const HOLD_DURATION = 2500; // 2.5 seconds to confirm note placement
+const HOLD_DURATION = 2500; 
+const EXCLUSION_RADIUS = 20; // 20px radius around existing notes to ignore new placement events
 
-const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying, playbackTime }) => {
+const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying, playbackTime, isGuideMode = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // Track active pointers for multi-touch and their specific hold states
   const activePointers = useRef(new Map<number, { 
     pitch: string,
     stepIndex: number,
     rippleGroup: d3.Selection<SVGGElement, unknown, null, undefined>,
     rippleInterval: ReturnType<typeof setInterval>,
     placementTimer: ReturnType<typeof setTimeout>,
-    hasPlaced: boolean // Flag to prevent multiple placements per hold
+    hasPlaced: boolean 
   }>());
 
   const maxTime = Math.max(
     CONFIG.measureCount * 16,
+    isGuideMode ? 128 : 0, 
     ...(notes.length ? notes.map(n => n.startTime + n.duration + 16) : [0])
   );
   
@@ -72,6 +74,7 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
         
         mainGroup.append("g").attr("class", "grid-layer");
         mainGroup.append("g").attr("class", "staff-layer");
+        mainGroup.append("g").attr("class", "guide-layer"); 
         mainGroup.append("g").attr("class", "interaction-layer");
         mainGroup.append("g").attr("class", "notes-layer");
         mainGroup.append("text").attr("class", "clef-text");
@@ -86,7 +89,7 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
         if (isMeasure || isBeat) {
             gridLayer.append("line")
                 .attr("x1", xScale(i)).attr("x2", xScale(i))
-                .attr("y1", -20).attr("y2", height)
+                .attr("y1", -20).attr("y2", height - marginTop * 2)
                 .attr("stroke", isMeasure ? "#94a3b8" : "#e2e8f0")
                 .attr("stroke-width", isMeasure ? 2 : 1)
                 .attr("stroke-dasharray", isMeasure ? "none" : "4 2");
@@ -100,7 +103,7 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
       const y = yScale(pitch);
       if (y !== undefined) {
         staffLayer.append("line")
-          .attr("x1", 0).attr("x2", width).attr("y1", y).attr("y2", y)
+          .attr("x1", 0).attr("x2", xScale(maxTime)).attr("y1", y).attr("y2", y)
           .attr("stroke", "#334155").attr("stroke-width", 2);
       }
     });
@@ -108,6 +111,20 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
     mainGroup.select(".clef-text")
       .attr("x", -40).attr("y", (yScale("G4") || 0) + 10)
       .text("𝄞").attr("font-size", "60px").attr("fill", "#0f172a");
+
+    // Guide Layer
+    const guideLayer = mainGroup.select(".guide-layer");
+    guideLayer.selectAll("*").remove();
+    if (isGuideMode) {
+        GUIDE_MELODY.forEach(guide => {
+            const x = xScale(guide.startTime);
+            const y = yScale(guide.pitch);
+            if (y === undefined) return;
+            const guideG = guideLayer.append("g").attr("class", "guide-note").style("pointer-events", "none");
+            guideG.append("ellipse").attr("cx", x).attr("cy", y).attr("rx", 9).attr("ry", 6).attr("fill", NOTE_COLORS.GUIDE).attr("transform", `rotate(-15, ${x}, ${y})`);
+            guideG.append("line").attr("x1", x + 8).attr("y1", y).attr("x2", x + 8).attr("y2", y - 30).attr("stroke", NOTE_COLORS.GUIDE).attr("stroke-width", 1.5);
+        });
+    }
 
     // Interaction Layer
     const interactionLayer = mainGroup.select(".interaction-layer");
@@ -119,17 +136,25 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
             .style("touch-action", "none")
             .on("contextmenu", (e) => e.preventDefault());
     }
-
-    hitRect.attr("width", width).attr("height", height);
+    hitRect.attr("width", xScale(maxTime)).attr("height", height - marginTop * 2);
 
     hitRect
       .on("pointerdown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        
-        const pointerId = event.pointerId;
         const [mx, my] = d3.pointer(event, interactionLayer.node());
         
+        // Block interaction if too close to an existing note
+        const isNearExistingNote = notes.some(note => {
+            const nx = xScale(note.startTime);
+            const ny = yScale(note.pitch);
+            if (ny === undefined) return false;
+            const dist = Math.sqrt(Math.pow(mx - nx, 2) + Math.pow(my - ny, 2));
+            return dist < EXCLUSION_RADIUS;
+        });
+
+        if (isNearExistingNote) return;
+
+        event.stopPropagation();
+        const pointerId = event.pointerId;
         const stepIndex = Math.round(xScale.invert(mx));
         const domain = yScale.domain();
         const stepSize = yScale.step();
@@ -140,7 +165,6 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
 
         const targetX = xScale(stepIndex);
         const targetY = yScale(pitch) || my;
-
         audioService.startNote(pitch);
 
         const rippleGroup = interactionLayer.append("g")
@@ -157,29 +181,21 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
         spawnRipple();
         const rippleInterval = setInterval(spawnRipple, 400);
 
-        // Define what happens when hold duration is reached
         const placementTimer = setTimeout(() => {
             const data = activePointers.current.get(pointerId);
             if (data && !data.hasPlaced) {
-                // 1. Mark as placed
                 data.hasPlaced = true;
-                
-                // 2. Clear ripples
                 clearInterval(data.rippleInterval);
                 data.rippleGroup.transition().duration(200).attr("opacity", 0).remove();
-                
-                // 3. Stop sound
                 audioService.stopNote(data.pitch);
                 
-                // 4. Add the actual note
-                const newNote: Note = {
+                onAddNote({
                     id: `user-${Date.now()}-${pointerId}`,
                     pitch: data.pitch,
                     startTime: data.stepIndex,
-                    duration: 4, // Fixed Quarter Note
+                    duration: 4,
                     isAiGenerated: false
-                };
-                onAddNote(newNote);
+                });
             }
         }, HOLD_DURATION);
 
@@ -195,88 +211,81 @@ const Staff: React.FC<StaffProps> = ({ notes, onAddNote, onRemoveNote, isPlaying
         (event.target as Element).setPointerCapture(pointerId);
       })
       .on("pointerup pointercancel", (event) => {
-        event.preventDefault();
         const pointerId = event.pointerId;
         const data = activePointers.current.get(pointerId);
-        
         if (data) {
-            // Cleanup
             clearTimeout(data.placementTimer);
             clearInterval(data.rippleInterval);
             data.rippleGroup.remove();
             audioService.stopNote(data.pitch);
-            
             activePointers.current.delete(pointerId);
         }
       });
 
     // Notes Layer
     const notesLayer = mainGroup.select(".notes-layer");
-    notesLayer.selectAll("*").remove();
+    const noteSelection = notesLayer.selectAll<SVGGElement, Note>("g.note-group")
+      .data(notes, d => d.id);
 
-    notes.forEach(note => {
-      const x = xScale(note.startTime);
-      const y = yScale(note.pitch);
-      const color = note.isAiGenerated ? NOTE_COLORS.AI : NOTE_COLORS.USER;
-      if (y === undefined) return;
+    const noteEnter = noteSelection.enter().append("g")
+      .attr("class", "note-group")
+      .style("cursor", "pointer")
+      .on("dblclick", (event, d) => {
+        event.stopPropagation();
+        onRemoveNote(d.id);
+      });
 
-      const noteG = notesLayer.append("g")
-        .attr("class", "note").attr("cursor", "pointer")
-        .on("pointerdown", (event) => event.stopPropagation())
-        .on("click", (event) => {
-          event.stopPropagation(); 
-          audioService.playNote(note.pitch);
-        })
-        .on("dblclick", (event) => {
-           event.preventDefault(); event.stopPropagation();
-           onRemoveNote(note.id);
-        });
+    noteEnter.append("ellipse")
+      .attr("rx", 9).attr("ry", 6);
 
-      noteG.append("rect")
-        .attr("x", x - 15).attr("y", y - 15).attr("width", 30).attr("height", 30).attr("fill", "transparent");
+    noteEnter.append("line")
+      .attr("stroke-width", 2);
 
-      noteG.append("ellipse")
-        .attr("cx", x).attr("cy", y).attr("rx", 9).attr("ry", 6).attr("fill", color).attr("stroke", "white").attr("stroke-width", 1)
-        .attr("pointer-events", "none").attr("transform", `rotate(-15, ${x}, ${y})`);
+    const noteUpdate = noteEnter.merge(noteSelection as any);
 
-      const pitchIndex = PITCH_ORDER.indexOf(note.pitch);
-      const centerIndex = PITCH_ORDER.indexOf("B4");
-      const isStemUp = pitchIndex > centerIndex;
-      const stemX = isStemUp ? x + 8 : x - 8;
-      const stemYStart = y;
-      const stemYEnd = isStemUp ? y - 35 : y + 35;
+    noteUpdate.select("ellipse")
+      .attr("fill", d => d.isAiGenerated ? NOTE_COLORS.AI : NOTE_COLORS.USER)
+      .attr("transform", d => {
+        const x = xScale(d.startTime);
+        const y = yScale(d.pitch) || 0;
+        return `translate(${x}, ${y}) rotate(-15)`;
+      });
 
-      noteG.append("line")
-        .attr("x1", stemX).attr("y1", stemYStart).attr("x2", stemX).attr("y2", stemYEnd)
-        .attr("stroke", color).attr("stroke-width", 2).attr("pointer-events", "none");
+    noteUpdate.select("line")
+      .attr("x1", d => xScale(d.startTime) + 8)
+      .attr("y1", d => yScale(d.pitch) || 0)
+      .attr("x2", d => xScale(d.startTime) + 8)
+      .attr("y2", d => (yScale(d.pitch) || 0) - 30)
+      .attr("stroke", d => d.isAiGenerated ? NOTE_COLORS.AI : NOTE_COLORS.USER);
 
-      const isHigh = PITCH_ORDER.indexOf(note.pitch) <= PITCH_ORDER.indexOf("A5") && PITCH_ORDER.indexOf(note.pitch) < PITCH_ORDER.indexOf("F5");
-      const isLow = PITCH_ORDER.indexOf(note.pitch) >= PITCH_ORDER.indexOf("C4") && PITCH_ORDER.indexOf(note.pitch) > PITCH_ORDER.indexOf("E4");
-      
-      if (isHigh || isLow) {
-          if (["C4", "A5", "C6", "A3"].includes(note.pitch)) {
-             noteG.append("line")
-                .attr("x1", x - 14).attr("x2", x + 14).attr("y1", y).attr("y2", y)
-                .attr("stroke", "#334155").attr("stroke-width", 2).attr("pointer-events", "none");
-          }
-      }
-    });
+    noteSelection.exit().remove();
 
-  }, [notes, maxTime, xScale, yScale, width, height]);
+    // Playback marker
+    let marker = mainGroup.select<SVGLineElement>("line.playback-marker");
+    if (marker.empty()) {
+        marker = mainGroup.append("line")
+            .attr("class", "playback-marker")
+            .attr("stroke", NOTE_COLORS.PLAYING)
+            .attr("stroke-width", 2)
+            .attr("y1", -20)
+            .attr("y2", height - marginTop * 2);
+    }
+
+    if (isPlaying) {
+      marker.attr("x1", xScale(playbackTime)).attr("x2", xScale(playbackTime)).attr("opacity", 1);
+    } else {
+      marker.attr("opacity", 0);
+    }
+
+  }, [notes, isPlaying, playbackTime, xScale, yScale, height, width, isGuideMode, onAddNote, onRemoveNote, maxTime]);
 
   return (
     <div 
       ref={containerRef} 
-      className="staff-container overflow-x-auto overflow-y-hidden border border-slate-200 bg-white rounded-xl shadow-sm w-full relative"
-      style={{ height: height + 100, touchAction: 'none' }}
+      className="w-full overflow-x-auto bg-white rounded-2xl shadow-inner border border-slate-200 p-8 custom-scrollbar"
+      style={{ cursor: 'crosshair', touchAction: 'none' }}
     >
-        <svg ref={svgRef} width={width + marginLeft} height={height + marginTop + 50} className="block select-none" />
-        {(isPlaying || playbackTime > 0) && (
-            <div 
-                className="absolute top-0 bottom-0 w-0.5 bg-amber-500 z-10 transition-all duration-75"
-                style={{ left: `${marginLeft + xScale(playbackTime)}px`, height: '100%' }}
-            />
-        )}
+      <svg ref={svgRef} width={width} height={height}></svg>
     </div>
   );
 };

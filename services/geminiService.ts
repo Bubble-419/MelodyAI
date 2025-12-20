@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Note } from "../types";
 
@@ -11,7 +12,8 @@ const noteSchema = {
       startTime: { type: Type.NUMBER, description: "Start time in 16th note steps (0-based integer)" },
       duration: { type: Type.NUMBER, description: "Duration in 16th note steps (integer)" },
     },
-    required: ["pitch", "startTime", "duration"]
+    required: ["pitch", "startTime", "duration"],
+    propertyOrdering: ["pitch", "startTime", "duration"],
   }
 };
 
@@ -24,7 +26,6 @@ export class GeminiService {
 
   async completeMelody(currentNotes: Note[]): Promise<Note[]> {
     // 1. Prepare Prompt
-    // Minimize token usage by mapping strict necessary data
     const simplifiedNotes = currentNotes.map(n => ({
       pitch: n.pitch,
       startTime: n.startTime,
@@ -53,30 +54,28 @@ export class GeminiService {
     `;
 
     try {
+      // Use gemini-3-pro-preview for complex reasoning tasks like music composition.
       const response = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3-pro-preview',
         contents: prompt,
         config: {
           responseMimeType: "application/json",
           responseSchema: noteSchema,
           // Slightly higher temperature for more creative harmonies
-          temperature: 0.5, 
+          temperature: 0.7, 
         }
       });
 
+      // Directly access .text property from GenerateContentResponse
       const jsonStr = response.text;
       if (!jsonStr) throw new Error("No response from AI");
 
-      const rawNotes = JSON.parse(jsonStr) as any[];
+      const rawNotes = JSON.parse(jsonStr.trim()) as any[];
 
       // Post-process to ensure IDs and AI flags are set correctly
       const newNotes: Note[] = rawNotes.map((n: any, index: number) => {
         
         // Determine if this note is "new" or "modified".
-        // We consider a note "AI generated" if:
-        // 1. It is completely outside the time range of original notes (Extension)
-        // 2. OR it does not match any original note at that specific time/pitch (Harmonization/Infill)
-        
         const isOriginalMatch = currentNotes.some(cn => 
             cn.pitch === n.pitch && 
             Math.abs(cn.startTime - n.startTime) < 1 // Strict timing match
